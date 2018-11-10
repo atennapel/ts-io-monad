@@ -13,5 +13,9 @@
   "devDependencies": {
     "@types/node": "^10.12.2",
     "typescript": "^3.1.5"
+  },
+  "dependencies": {
+    "abort-controller": "^1.0.2",
+    "abortcontroller-polyfill": "^1.1.9"
   }
 }
