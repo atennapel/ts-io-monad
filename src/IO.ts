@@ -1,10 +1,17 @@
 import AbortController, { AbortSignal, AbortError } from './AbortController';
 
 /*
+TODO:
+  - error handling
+  - Applicative instance
+*/
+
+/*
   An asynchonous computation that either:
   - results in a value of type T
-  - results in an error of type (E | AbortError) 
-  - never returns
+  - results in an error of type E
+  - is aborted, resulting in an error of type AbortError 
+  - loops forever
   also can make progress reports of type P
 */
 export type Task<T> = IO<Error, never, T>;
