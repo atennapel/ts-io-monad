@@ -6,13 +6,7 @@
     orSeq
     eitherSeq
 */
-export class CancelledError extends Error {
-  
-  constructor() {
-    super('Cancelled');
-  }
-
-}
+import AbortController, { AbortSignal } from './AbortController';
 
 enum ApStateTag {
   ApStateNothing,
