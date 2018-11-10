@@ -1,239 +1,212 @@
+import AbortController, { AbortSignal, AbortError } from './AbortController';
+
 /*
-  TODO:
-    error handling
-    or
-    either
-    orSeq
-    eitherSeq
+  An asynchonous computation that either:
+  - results in a value of type T
+  - results in an error of type (E | AbortError) 
+  - never returns
+  also can make progress reports of type P
 */
-import AbortController, { AbortSignal } from './AbortController';
-
-enum ApStateTag {
-  ApStateNothing,
-  ApStateCancelled,
-  ApStateError,
-  ApStateValDone,
-  ApStateFnDone,
-}
-type ApState<T, R> =
-  { tag: ApStateTag.ApStateNothing } |
-  { tag: ApStateTag.ApStateCancelled } |
-  { tag: ApStateTag.ApStateError } |
-  { tag: ApStateTag.ApStateValDone, val: T } |
-  { tag: ApStateTag.ApStateFnDone, fn: (val: T) => R };
-
-export type IOError<T> = IO<Error, T>;
-
-export default class IO<E, T> {
+export type Task<T> = IO<Error, never, T>;
+type Err<E> = E | AbortError;
+export default class IO<E, P, T> {
 
   constructor(
     private readonly action: (
       resolve: (val: T) => void,
-      reject: (err: E) => void,
-      cancel: () => void,
-      token: AbortSignal,
-    ) => void,
+      reject: (err: Err<E>) => void,
+      report: (progress: P) => void,
+      signal: AbortSignal,
+    ) => void
   ) { }
 
-  static of<E, T>(val: T): IO<E, T> {
-    return new IO((resolve, reject, cancel, token) => {
-      if(token.aborted) return cancel();
-      return resolve(val);
-    });
+  static of<T>(val: T): IO<never, never, T> {
+    return new IO((resolve, reject, report, signal) => resolve(val));
   }
-  static error<E, T>(err: E): IO<E, T> {
-    return new IO((resolve, reject, cancel, token) => {
-      if(token.aborted) return cancel();
-      return reject(err);
-    });
+  static error<E>(err: Err<E>): IO<E, never, never> {
+    return new IO((resolve, reject, report, signal) => reject(err));
   }
 
+  /* Various ways to unleash the effects within */
   run(
-    resolve: (val: T) => void,
-    reject: (err: E) => void,
-    cancel: () => void,
-    token: AbortController = new AbortController(),
+    resolve: (val: T) => void = () => { },
+    reject: (err: Err<E>) => void = err => { throw err },
+    report: (progress: P) => void = () => { },
+    controller: AbortController = new AbortController(),
   ): AbortController {
-    if(token.signal.aborted) {
-      cancel();
-      return token;
-    }
-    this.action(resolve, reject, cancel, token.signal);
-    return token;
+    const signal = controller.signal;
+    this.action(
+      (val: T) => {
+        if (signal.aborted) return reject(new AbortError());
+        return resolve(val);
+      },
+      (err: Err<E>) => {
+        if (signal.aborted) return reject(new AbortError());
+        return reject(err);
+      },
+      (progress: P) => {
+        if (signal.aborted) return;
+        report(progress);
+      }, signal);
+    return controller;
+  }
+  runImmediate(
+    resolve: (val: T) => void = () => { },
+    reject: (err: Err<E>) => void = err => { throw err },
+    report: (progress: P) => void = () => { },
+    controller: AbortController = new AbortController(),
+  ): AbortController {
+    setImmediate(() => this.run(resolve, reject, report, controller));
+    return controller;
+  }
+  runTimeout(
+    time: number = 0,
+    resolve: (val: T) => void = () => { },
+    reject: (err: Err<E>) => void = err => { throw err },
+    report: (progress: P) => void = () => { },
+    controller: AbortController = new AbortController(),
+  ): AbortController {
+    setTimeout(() => this.run(resolve, reject, report, controller), time);
+    return controller;
   }
 
-  map<R>(fn: (val: T) => R): IO<E, R> {
-    return new IO<E, R>((resolve, reject, cancel, token) => {
-      if(token.aborted) return cancel();
-      return this.action(val => {
-        if(token.aborted) return cancel();
-        return resolve(fn(val));
-      }, reject, cancel, token);
-    });
+  /* Convert to a promise */
+  toPromise(
+    report: (progress: P) => void = () => { },
+    controller: AbortController = new AbortController()
+  ): Promise<T> {
+    return new Promise((resolve, reject) => this.run(resolve, reject, report, controller));
+  }
+  toPromiseImmediate(
+    report: (progress: P) => void = () => { },
+    controller: AbortController = new AbortController()
+  ): Promise<T> {
+    return new Promise((resolve, reject) => this.runImmediate(resolve, reject, report, controller));
+  }
+  toPromiseTimeout(
+    time: number = 0,
+    report: (progress: P) => void = () => { },
+    controller: AbortController = new AbortController()
+  ): Promise<T> {
+    return new Promise((resolve, reject) => this.runTimeout(time, resolve, reject, report, controller));
   }
 
-  ap<F, R>(fn: IO<F, (val: T) => R>): IO<E | F, R> {
-    return new IO<E | F, R>((resolve, reject, cancel, token) => {
-      if(token.aborted) return cancel();
-      let state: ApState<T, R> = { tag: ApStateTag.ApStateNothing };
-      const cancelIf = () => {
-        if(token.aborted) {
-          state = { tag: ApStateTag.ApStateCancelled };
-          cancel();
-          return true;
-        }
-        return false;
-      };
-      const cancelAll = () => {
-        state = { tag: ApStateTag.ApStateCancelled };
-        cancel();
-      };
-      fn.action(
-        (fn: (val: T) => R) => {
-          switch(state.tag) {
-            case ApStateTag.ApStateNothing:
-              if(cancelIf()) return;
-              state = { tag: ApStateTag.ApStateFnDone, fn };
-              break;
-            case ApStateTag.ApStateValDone:
-              if(cancelIf()) return;
-              resolve(fn(state.val)); break;
-            case ApStateTag.ApStateCancelled:
-              break;
-            default:
-              if(cancelIf()) return;
-              cancelAll();
-              break;
-          }
-        },
-        (err: F) => {
-          switch(state.tag) {
-            case ApStateTag.ApStateNothing:
-              if(cancelIf()) return;
-              state = { tag: ApStateTag.ApStateError };
-              reject(err);
-              break;
-            case ApStateTag.ApStateError:
-              break;
-            case ApStateTag.ApStateCancelled:
-              break;
-            default:
-              if(cancelIf()) return;
-              reject(err);
-              break;
-          }
-        },
-        () => {
-          switch(state.tag) {
-            case ApStateTag.ApStateNothing:
-              if(cancelIf()) return;
-              cancelAll();
-              break;
-            case ApStateTag.ApStateError:
-              break;
-            case ApStateTag.ApStateCancelled:
-              break;
-            default:
-              if(cancelIf()) return;
-              cancelAll();
-              break;
-          }
-        },
-        token,
-      );
-      this.action(
+  map<R>(fn: (val: T) => R): IO<E, P, R> {
+    return new IO((resolve, reject, report, signal) => {
+      if (signal.aborted) return reject(new AbortError());
+      return this.action(
         (val: T) => {
-          switch(state.tag) {
-            case ApStateTag.ApStateNothing:
-              if(cancelIf()) return;
-              state = { tag: ApStateTag.ApStateValDone, val };
-              break;
-            case ApStateTag.ApStateFnDone:
-              if(cancelIf()) return;
-              resolve(state.fn(val)); break;
-            case ApStateTag.ApStateCancelled:
-              break;
-            default:
-              if(cancelIf()) return;
-              cancelAll();
-              break;
-          }
+          if (signal.aborted) return reject(new AbortError());
+          return resolve(fn(val));
         },
-        (err: E) => {
-          switch(state.tag) {
-            case ApStateTag.ApStateNothing:
-              if(cancelIf()) return;
-              state = { tag: ApStateTag.ApStateError };
-              reject(err);
-              break;
-            case ApStateTag.ApStateError:
-              break;
-            case ApStateTag.ApStateCancelled:
-              break;
-            default:
-              if(cancelIf()) return;
-              reject(err);
-              break;
-          }
-        },
-        () => {
-          switch(state.tag) {
-            case ApStateTag.ApStateNothing:
-              if(cancelIf()) return;
-              cancelAll();
-              break;
-            case ApStateTag.ApStateError:
-              break;
-            case ApStateTag.ApStateCancelled:
-              break;
-            default:
-              if(cancelIf()) return;
-              cancelAll();
-              break;
-          }
-        },
-        token,
-      );
+        reject,
+        report,
+        signal,
+      )
     });
   }
-  both<F, R>(that: IO<F, R>): IO<E | F, [T, R]> {
-    return that.ap(this.map((t: T) => (r: R) => [t, r] as [T, R]));
+  mapError<F>(fn: (err: Err<E>) => Err<F>): IO<F, P, T> {
+    return new IO((resolve, reject, report, signal) => {
+      if (signal.aborted) return reject(new AbortError());
+      return this.action(
+        resolve,
+        (err: Err<E>) => {
+          if (signal.aborted) return reject(new AbortError());
+          return reject(fn(err));
+        },
+        report,
+        signal,
+      )
+    });
+  }
+  mapProgress<Q>(fn: (progress: P) => Q): IO<E, Q, T> {
+    return new IO((resolve, reject, report, signal) => {
+      if (signal.aborted) return reject(new AbortError());
+      return this.action(
+        resolve,
+        reject,
+        (progress: P) => {
+          if (signal.aborted) return reject(new AbortError());
+          return report(fn(progress));
+        },
+        signal,
+      )
+    });
   }
 
-  chain<F, R>(fn: (val: T) => IO<F, R>): IO<E | F, R> {
-    return new IO<E | F, R>((resolve, reject, cancel, token) => {
-      if(token.aborted) return cancel();
-      return this.action(val => {
-        if(token.aborted) return cancel();
-        fn(val).action(val => {
-          if(token.aborted) return cancel();
-          resolve(val);
-        }, reject, cancel, token);
-      }, reject, cancel, token);
+  chain<F, Q, R>(fn: (val: T) => IO<F, Q, R>): IO<E|F, P|Q, R> {
+    return new IO((resolve, reject, report, signal) => {
+      if (signal.aborted) return reject(new AbortError());
+      return this.action(
+        (val: T) => {
+          if (signal.aborted) return reject(new AbortError());
+          return fn(val).action(resolve, reject, report, signal);
+        },
+        reject,
+        report,
+        signal,
+      )
     });
   }
-  then<F, R>(that: IO<F, R>): IO<E | F, R> {
+  then<F, Q, R>(that: IO<F, Q, R>): IO<E|F, P|Q, R> {
     return this.chain(() => that);
   }
-  after<F, R>(that: IO<F, R>): IO<E | F, T> {
+  after<F, Q, R>(that: IO<F, Q, R>): IO<E|F, P|Q, T> {
     return that.chain(() => this);
   }
 
-  apSeq<F, R>(fn: IO<F, (val: T) => R>): IO<E | F, R> {
-    return fn.chain(fn => this.map(v => fn(v)));
+  apSeq<F, Q, R>(that: IO<F, Q, (val: T) => R>): IO<E|F, P|Q, R> {
+    return that.chain(fn => this.map(val => fn(val)));
   }
-  bothSeq<F, R>(that: IO<F, R>): IO<E | F, [T, R]> {
+  bothSeq<F, Q, R>(that: IO<F, Q, R>): IO<E|F, P|Q, [T, R]> {
     return this.chain(t => that.map(r => [t, r] as [T, R]));
   }
 
-  doWhile(fn: (val: T) => boolean): IO<E, T> {
-    return this.chain(val => fn(val)? this.doWhile(fn): IO.of(val));
-  }
-  doUntil(fn: (val: T) => boolean): IO<E, T> {
-    return this.doWhile(val => !fn(val));
-  }
-  loop(): IO<E, never> {
-    return this.doWhile(() => true) as IO<E, never>;
-  }
-
 }
+
+// utilities
+export const log = (msg: any) => new IO<never, never, void>((resolve, reject, report, signal) => {
+  if (signal.aborted) return reject(new AbortError());
+  console.log(msg);
+  resolve(undefined);
+});
+
+export const timeout = (time: number) => new IO<never, never, void>((resolve, reject, report, signal) => {
+  if (signal.aborted) return reject(new AbortError());
+  const id = setTimeout(
+    () => {
+      if (signal.aborted) return reject(new AbortError());
+      resolve(undefined);
+    },
+    time
+  );
+  signal.addEventListener('abort', () => {
+    clearTimeout(id);
+    return reject(new AbortError());
+  });
+});
+
+export const timeoutWithProgress = (time: number, interval: number = 1000) =>
+  new IO<never, number, number>((resolve, reject, report, signal) => {
+    if (signal.aborted) return reject(new AbortError());
+    const start = Date.now();
+    let current = start;
+    let id: any = null;
+    const fn = () => {
+      if (signal.aborted) return reject(new AbortError());
+      const now = Date.now();
+      const diffFromStart = now - start;
+      if (now - start >= time) {
+        resolve(diffFromStart);
+      } else {
+        report(now - current);
+        current = now;
+        id = setTimeout(fn, interval);
+      }
+    };
+    id = setTimeout(fn, interval);
+    signal.addEventListener('abort', () => {
+      clearTimeout(id);
+      return reject(new AbortError());
+    });
+  });

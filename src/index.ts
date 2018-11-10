@@ -1,14 +1,11 @@
-import IO from './IO';
-import { log, timeout } from './util';
+import IO, { log, timeout, timeoutWithProgress } from './IO';
 
-const program =
-  timeout(2000).then(log('a')).map(() => 1)
-    .both(log('b').then(IO.error('fail')));
+const program = timeoutWithProgress(5000);
 
-const control = program.run(
-  val => console.log('done', val),
-  val => console.log('error', val),
-  () => console.log('cancel')
+const controller = program.run(
+  val => console.log('resolve', val),
+  err => console.log('error', ''+err.message),
+  progress => console.log('progress', progress),
 );
 
-control.abort();
+// controller.abort();
