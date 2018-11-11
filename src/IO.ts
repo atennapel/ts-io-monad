@@ -2,13 +2,13 @@ import AbortController, { AbortSignal, AbortError } from './AbortController';
 
 /*
 TODO:
-  - chain2, chain2seq
-  - MonadPlus, or
-  - all, any, both3, map3 ...and seq versions
+  - chain3,4,5 + Seq versions
+  - MonadPlus, or, either
+  - all, any, allSeq, anySeq
   - looping, retries, loop with state
   - figure out how to handle exceptions
   - fetch/xmlhttprequest wrapping
-  - foldable, traversable, sequence, foldMap?
+  - foldable, traversable, sequence, foldMap, scan
   - maybe rethink bracket
 */
 
@@ -30,7 +30,7 @@ type CState<A, B> =
   - loops forever
   also can make progress reports of type P
 */
-export default class IO<E, P, T> {
+export default class IO<E, P, T>{
 
   constructor(
     private readonly action: (
@@ -268,6 +268,30 @@ export default class IO<E, P, T> {
   both<F, Q, R>(that: IO<F, Q, R>): IO<E|F, P|Q, [T, R]> {
     return this.map2((a, b) => [a, b] as [T, R], that);
   }
+  map3<F, F2, Q, Q2, R, R2, S>(
+    fn: (a: T, b: R, c: R2) => S,
+    that: IO<F, Q, R>,
+    that2: IO<F2, Q2, R2>,
+  ): IO<E|F|F2, P|Q|Q2, S> {
+    return this.map2((a, b) => (c: R2) => fn(a, b, c), that).map2((fn, c) => fn(c), that2);
+  }
+  map4<F, F2, F3, Q, Q2, Q3, R, R2, R3, S>(
+    fn: (a: T, b: R, c: R2, d: R3) => S,
+    that: IO<F, Q, R>,
+    that2: IO<F2, Q2, R2>,
+    that3: IO<F3, Q3, R3>,
+  ): IO<E|F|F2|F3, P|Q|Q2|Q3, S> {
+    return this.map3((a, b, c) => (d: R3) => fn(a, b, c, d), that, that2).map2((fn, d) => fn(d), that3);
+  }
+  map5<F, F2, F3, F4, Q, Q2, Q3, Q4, R, R2, R3, R4, S>(
+    fn: (a: T, b: R, c: R2, d: R3, e: R4) => S,
+    that: IO<F, Q, R>,
+    that2: IO<F2, Q2, R2>,
+    that3: IO<F3, Q3, R3>,
+    that4: IO<F4, Q4, R4>,
+  ): IO<E|F|F2|F3|F4, P|Q|Q2|Q3|Q4, S> {
+    return this.map4((a, b, c, d) => (e: R4) => fn(a, b, c, d, e), that, that2, that3).map2((fn, e) => fn(e), that4);
+  }
 
   chain<F, Q, R>(fn: (val: T) => IO<F, Q, R>): IO<E|F, P|Q, R> {
     return new IO((resolve, reject, report, controller) => {
@@ -304,6 +328,37 @@ export default class IO<E, P, T> {
   }
   bothSeq<F, Q, R>(that: IO<F, Q, R>): IO<E|F, P|Q, [T, R]> {
     return this.map2Seq((a, b) => [a, b] as [T, R], that);
+  }
+  map3Seq<F, F2, Q, Q2, R, R2, S>(
+    fn: (a: T, b: R, c: R2) => S,
+    that: IO<F, Q, R>,
+    that2: IO<F2, Q2, R2>,
+  ): IO<E|F|F2, P|Q|Q2, S> {
+    return this.map2Seq((a, b) => (c: R2) => fn(a, b, c), that).map2Seq((fn, c) => fn(c), that2);
+  }
+  map4Seq<F, F2, F3, Q, Q2, Q3, R, R2, R3, S>(
+    fn: (a: T, b: R, c: R2, d: R3) => S,
+    that: IO<F, Q, R>,
+    that2: IO<F2, Q2, R2>,
+    that3: IO<F3, Q3, R3>,
+  ): IO<E|F|F2|F3, P|Q|Q2|Q3, S> {
+    return this.map3Seq((a, b, c) => (d: R3) => fn(a, b, c, d), that, that2).map2Seq((fn, d) => fn(d), that3);
+  }
+  map5Seq<F, F2, F3, F4, Q, Q2, Q3, Q4, R, R2, R3, R4, S>(
+    fn: (a: T, b: R, c: R2, d: R3, e: R4) => S,
+    that: IO<F, Q, R>,
+    that2: IO<F2, Q2, R2>,
+    that3: IO<F3, Q3, R3>,
+    that4: IO<F4, Q4, R4>,
+  ): IO<E|F|F2|F3|F4, P|Q|Q2|Q3|Q4, S> {
+    return this.map4Seq((a, b, c, d) => (e: R4) => fn(a, b, c, d, e), that, that2, that3).map2Seq((fn, e) => fn(e), that4);
+  }
+
+  chain2<F, SE, Q, SP, R, S>(fn: (a: T, b: R) => IO<SE, SP, S>, that: IO<F, Q, R>): IO<E|F|SE, P|Q|SP, S> {
+    return this.both(that).chain(([a, b]: [T, R]) => fn(a, b));
+  }
+  chain2Seq<F, SE, Q, SP, R, S>(fn: (a: T, b: R) => IO<SE, SP, S>, that: IO<F, Q, R>): IO<E|F|SE, P|Q|SP, S> {
+    return this.chain(a => that.chain(b => fn(a, b)));
   }
 
   doWhile(fn: (val: T) => boolean): IO<E, P, T> {
