@@ -1,17 +1,25 @@
-import IO, { log, timeout, timeoutWithProgress } from './IO';
+import IO from './IO';
+import { log, Console, NativeConsole, Sleep, sleep, NativeSleep } from './Effects';
+
+export const TestConsole: Console = {
+  log: msg => new IO((env, done) => { console.log('TEST!: ' + msg); return done() }),
+};
+
+export const TestSleep: Sleep = {
+  sleep: ms => new IO((env, done) => done()),
+};
 
 const program =
-  timeout(2000).then(log('a'))
-  .map3(
-    (a, b, c) => 42,
-    timeout(1000).then(log('b')).error('whaaa'),
-    log('c'),
-  );
+  log('a')
+    .then(sleep(1000))
+    .then(log('b'))
+    .then(sleep(1000))
+    .then(log('c'));
 
-const controller = program.run(
-  val => console.log('resolve', val),
-  err => console.log('error', ''+err),
-  progress => console.log('progress', progress),
+program.run(
+  {
+    ...NativeConsole,
+    ...TestSleep,
+  },
+  () => { console.log('program done!') },
 );
-
-//controller.abort();
